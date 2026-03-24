@@ -1,0 +1,237 @@
+; ============================================================
+; Pintle Injector CFD - Fluent ジャーナルファイル
+; Ansys Fluent 25.2 / 2D 軸対称 / 圧力ベース Coupled
+; ============================================================
+;
+; 実行方法 (いずれか):
+;   A) GUI: File > Read Journal > このファイルを選択
+;   B) CUI: fluent 2ddp -g -i pintle_injector.jou
+;   C) Workbench: Fluent セルを右クリック > Edit > Properties >
+;                 Journal File に本ファイルのパスを指定
+;
+; 前提:
+;   - generate_mesh.py を先に実行して pintle_injector.cgns を生成済みであること
+;   - 本ファイルは pintle_injector.cgns と同じディレクトリに置くこと
+;   - Non-Premixed Combustion の PDF テーブルは GUI で別途生成が必要
+;     (Define > Models > Species > Non-Premixed Combustion > PDF Options)
+;
+; 座標系 (generate_mesh.py 準拠):
+;   x = 軸方向 (燃焼室方向が +),  y = 半径方向 (y=0 が対称軸)
+;
+; 推進剤条件:
+;   LOX  : 0.50 kg/s,  90 K  (軸方向噴射)
+;   RP-1 : 0.25 kg/s, 300 K  (環状スリットから半径方向噴射)
+;   燃焼室圧力: 2.0 MPa
+; ============================================================
+
+
+; ============================================================
+; 1. メッシュ読み込み
+; ============================================================
+/file/import/cgns/mesh "pintle_injector.cgns"
+
+; メッシュ品質確認
+/mesh/check
+
+
+; ============================================================
+; 2. ゾーン名リネーム
+;    (CGNS インポート時に gmsh の内部 ID "2_l_N" になるため)
+;    generate_mesh.py の addLine() 呼び出し順:
+;      l1=1, l2=2, l3=3, l4=4, l5=5, l6=6, l7=7, l8=8
+;      l10=9, l12=10, l13=11, l14=12, l15=13
+; ============================================================
+/mesh/modify-zones/zone-name 2_l_1              lox_inlet
+/mesh/modify-zones/zone-name 2_l_5              rp1_inlet
+/mesh/modify-zones/zone-name 2_l_12             chamber_outlet
+/mesh/modify-zones/zone-name 2_l_4              axis_lox
+/mesh/modify-zones/zone-name 2_l_13             axis_chamber
+/mesh/modify-zones/zone-name 2_l_2              wall_pintle_top
+/mesh/modify-zones/zone-name 2_l_8              wall_pintle_body
+/mesh/modify-zones/zone-name 2_l_9              wall_pintle_tip
+/mesh/modify-zones/zone-name default_exterior-12 wall_slit
+/mesh/modify-zones/zone-name 2_l_10             wall_chamber_step
+/mesh/modify-zones/zone-name 2_l_11             wall_chamber_main
+
+
+; ============================================================
+; 3. ゾーンタイプ変更
+; ============================================================
+/mesh/modify-zones/zone-type lox_inlet       mass-flow-inlet
+/mesh/modify-zones/zone-type rp1_inlet       mass-flow-inlet
+/mesh/modify-zones/zone-type chamber_outlet  pressure-outlet
+/mesh/modify-zones/zone-type axis_lox        axis
+/mesh/modify-zones/zone-type axis_chamber    axis
+
+
+; ============================================================
+; 4. ソルバー基本設定
+; ============================================================
+; 圧力ベースソルバー (選択肢なので ? なし、/ で直接指定)
+/define/models/solver pressure-based
+
+; 定常計算: 圧力ベースソルバーのデフォルトが定常なので設定不要
+
+; 2D 軸対称
+/define/models/axisymmetric? yes
+
+
+; ============================================================
+; 5. 物理モデル設定
+; ============================================================
+
+; --- エネルギー方程式 ---
+/define/models/energy? yes
+no    ; Compute viscous energy work? [no]
+no    ; Include pressure work in energy equation? [no]
+yes   ; Include diffusion at inlets? [yes]
+
+; --- 乱流モデル: Realizable k-epsilon ---
+/define/models/viscous ke-realizable
+yes   ; Enable the realizable k-epsilon turbulence model? [no]
+
+; Enhanced Wall Treatment は GUI で手動設定してください:
+;   Define > Models > Viscous > Near-Wall Treatment > Enhanced Wall Treatment
+; (Fluent 25.2 では TUI から直接設定できないため)
+
+; --- 燃焼モデル: Non-Premixed Combustion (PDF 法) ---
+; 注意: このコマンド実行後に PDF テーブルの生成・読み込みが必要です
+;       GUI の場合: Define > Models > Species > Non-Premixed Combustion
+;       PDF ファイルがある場合は下の read-pdf コマンドを有効化してください
+/define/models/species non-premixed-combustion
+
+; PDF テーブル読み込み (ファイルがある場合はコメントを外す)
+; /file/read-pdf "lox_rp1.pdf"
+
+
+; ============================================================
+; 6. 境界条件設定
+; ============================================================
+; !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+; 注意: 境界条件は Fluent 25.2 の TUI 応答順序がバージョン・
+;       有効モデルに依存して変わるため、GUI で手動設定してください。
+;
+; 【GUI での設定手順】
+;   Define > Boundary Conditions で各ゾーンを選択して以下を入力:
+;
+;   [lox_inlet]  Type: mass-flow-inlet
+;     - Mass Flow Rate: 0.5 kg/s
+;     - Total Temperature: 90 K
+;     - Turbulence: Intensity & Viscosity Ratio, 5%, ratio 10
+;     - (PDF テーブル読込後) Mean Mixture Fraction: 0.0 (pure LOX)
+;
+;   [rp1_inlet]  Type: mass-flow-inlet
+;     - Mass Flow Rate: 0.25 kg/s
+;     - Total Temperature: 300 K
+;     - Turbulence: Intensity & Viscosity Ratio, 5%, ratio 10
+;     - (PDF テーブル読込後) Mean Mixture Fraction: 1.0 (pure RP-1)
+;
+;   [chamber_outlet]  Type: pressure-outlet
+;     - Gauge Total Pressure: 1,600,000 Pa  (燃焼室圧力 2 MPa の 80%)
+;     - Backflow Total Temperature: 3000 K
+;     - Turbulence: Intensity & Viscosity Ratio, 5%, ratio 10
+;     - (PDF テーブル読込後) Backflow Mean Mixture Fraction: 0.2
+;
+;   [wall_pintle_top / wall_pintle_body / wall_pintle_tip /
+;    wall_slit / wall_chamber_step / wall_chamber_main]
+;     Type: wall (no-slip, stationary)
+;     - Thermal: Heat Flux = 0 W/m² (断熱壁)
+; !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+
+; ============================================================
+; 7. 求解設定 (Solution Methods)
+; ============================================================
+
+; P-V Coupling: Coupled (scheme number 24)
+/solve/set/p-v-coupling 24
+
+; 勾配スキーム: Least Squares Cell Based
+/solve/set/gradient-scheme
+no          ; Green-Gauss Cell Based?  no = Least Squares Cell Based
+
+; 離散化スキーム
+/solve/set/discretization-scheme/pressure 12   ; Second Order
+/solve/set/discretization-scheme/mom      1    ; Second Order Upwind
+/solve/set/discretization-scheme/k        1    ; Second Order Upwind
+/solve/set/discretization-scheme/eps      1    ; Second Order Upwind
+; PDF テーブル読み込み後に有効化:
+; /solve/set/discretization-scheme/pdf-0   1    ; Second Order Upwind (mean-mixture-fraction)
+
+
+; ============================================================
+; 8. 求解制御 (Solution Controls)
+; ============================================================
+; Coupled ソルバーの CFL 数 (pseudo-time 法)
+/solve/set/pseudo-time-method/global-time-step-settings/global-dt-pseudo-relax-factor
+k 0.75
+epsilon 0.75
+energy 0.75
+q       ; サブメニュー終了
+
+; スカラーの緩和係数
+; /solve/set/under-relaxation/pdf-0 0.9   ; PDF テーブル読み込み後に有効化
+
+
+; ============================================================
+; 9. 収束判定 (Residual Monitors)
+; ============================================================
+; 残差収束判定値の設定
+; 引数順: continuity x-velocity y-velocity k epsilon energy
+/solve/monitors/residual/convergence-criteria
+1e-4        ; continuity
+1e-4        ; x-velocity (axial)
+1e-4        ; y-velocity (radial)
+1e-4        ; k
+1e-4        ; epsilon
+1e-5        ; energy
+
+; 残差の表示・プロット
+/solve/monitors/residual/print? yes
+/solve/monitors/residual/plot? yes
+
+
+; ============================================================
+; 10. 初期化
+; ============================================================
+; ハイブリッド初期化 (複雑形状に適する)
+/solve/initialize/hyb-initialization yes
+
+
+; ============================================================
+; 11. 計算実行
+; ============================================================
+/solve/iterate 2000
+
+
+; ============================================================
+; 12. 結果保存
+; ============================================================
+/file/write-case-data "output/pintle_injector.cas.h5"
+
+
+; ============================================================
+; 13. 後処理: 基本レポート出力
+; ============================================================
+
+; 出口 質量流量
+/report/fluxes/mass-flow
+chamber_outlet
+()         ; ゾーンリスト終了
+yes        ; ファイルに書き出す?
+"output/mass_flow_report.txt"
+
+; 出口 面積平均温度
+/report/surface-integrals/facet-avg
+chamber_outlet
+()
+temperature
+yes
+"output/outlet_temperature_report.txt"
+
+
+; ============================================================
+; ジャーナル終了
+; ============================================================
+; Fluent を終了する場合は以下のコメントを外す
+; /exit yes
